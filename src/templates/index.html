@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Scheduler</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+        :root {
+            --background-color: #f7f8fc;
+            --container-bg-color: #ffffff;
+            --chat-box-bg-color: #f1f3f6;
+            --user-message-bg-color: #007bff;
+            --user-message-color: #ffffff;
+            --assistant-message-bg-color: #e9ecef;
+            --assistant-message-color: #343a40;
+            --form-bg-color: #ffffff;
+            --border-color: #dee2e6;
+            --text-color: #495057;
+            --font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--background-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            color: var(--text-color);
+        }
+
+        #chat-container {
+            width: 80%;
+            max-width: 800px;
+            height: 90%;
+            background-color: var(--container-bg-color);
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border-color);
+        }
+
+        #chat-box {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background-color: var(--chat-box-bg-color);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        #chat-form {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid var(--border-color);
+            background-color: var(--form-bg-color);
+        }
+
+        #user-input {
+            flex-grow: 1;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px 15px;
+            font-size: 1em;
+            background-color: var(--container-bg-color);
+            color: var(--text-color);
+            transition: border-color 0.2s;
+        }
+
+        #user-input:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 75%;
+        }
+        
+        .message .role {
+            font-weight: 600;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+            color: #6c757d;
+        }
+
+        .message .content {
+            padding: 12px 15px;
+            border-radius: 12px;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+
+        .user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+        
+        .user .content {
+            background-color: var(--user-message-bg-color);
+            color: var(--user-message-color);
+            border-bottom-right-radius: 4px;
+        }
+        
+        .assistant {
+            align-self: flex-start;
+            align-items: flex-start;
+        }
+
+        .assistant .content {
+            background-color: var(--assistant-message-bg-color);
+            color: var(--assistant-message-color);
+            border-bottom-left-radius: 4px;
+        }
+
+        details {
+            background-color: var(--assistant-message-bg-color);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+        
+        summary {
+            padding: 10px 15px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        pre {
+            background-color: #fff;
+            padding: 15px;
+            margin: 0;
+            border-radius: 0 0 12px 12px;
+            border-top: 1px solid var(--border-color);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <div id="chat-box"></div>
+        <form id="chat-form">
+            <input type="text" id="user-input" placeholder="Enter your prompt...">
+            <button type="submit">Send</button>
+        </form>
+    </div>
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+
+        let messages = [];
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const userMessage = userInput.value;
+            userInput.value = '';
+
+            addMessageToChatbox('user', userMessage);
+            messages.push({ role: 'user', content: userMessage });
+
+            const formData = new FormData();
+            formData.append('messages', JSON.stringify(messages));
+            formData.append('model', 'qwen3:4b');
+            formData.append('stream', 'true');
+
+            const response = await fetch('/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Accept': 'text/event-stream',
+                  'Cache-Control': 'no-cache'
+                },
+                body: formData
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let assistantMessage = '';
+            let isThinking = false;
+            let toolCalls = [];
+
+            let currentAssistantBubble = addMessageToChatbox('assistant', '');
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n\n');
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.substring(6);
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const parsed = JSON.parse(data);
+
+                        if (parsed.type === 'tool_output') {
+                            addToolOutputToChatbox(parsed);
+                            currentAssistantBubble = addMessageToChatbox('assistant', '');
+                            assistantMessage = '';
+                            continue;
+                        }
+
+                        const choice = parsed.choices[0];
+                        const delta = choice.delta;
+
+                        if (delta.tool_calls) {
+                            delta.tool_calls.forEach(tc => {
+                                if (!toolCalls[tc.index]) {
+                                    toolCalls[tc.index] = { function: { arguments: "" } };
+                                }
+                                Object.assign(toolCalls[tc.index], tc);
+                                if (tc.function && tc.function.arguments) {
+                                    toolCalls[tc.index].function.arguments += tc.function.arguments;
+                                }
+                            });
+                        }
+
+                        if (choice.finish_reason === 'tool_calls') {
+                            addToolCallToChatbox(toolCalls);
+                            toolCalls = [];
+                        }
+
+                        if (delta.content) {
+                            let remainingContent = delta.content;
+                            while (remainingContent) {
+                                if (isThinking) {
+                                    const endThinkIndex = remainingContent.indexOf('</think>');
+                                    if (endThinkIndex !== -1) {
+                                        const thoughtPart = remainingContent.substring(0, endThinkIndex);
+                                        addThoughtToChatbox(thoughtPart);
+                                        isThinking = false;
+                                        remainingContent = remainingContent.substring(endThinkIndex + 8);
+                                    } else {
+                                        addThoughtToChatbox(remainingContent);
+                                        remainingContent = '';
+                                    }
+                                } else {
+                                    const startThinkIndex = remainingContent.indexOf('<think>');
+                                    if (startThinkIndex !== -1) {
+                                        const regularPart = remainingContent.substring(0, startThinkIndex);
+                                        assistantMessage += regularPart;
+                                        if (currentAssistantBubble) {
+                                            currentAssistantBubble.querySelector('.content').innerText = assistantMessage;
+                                        }
+                                        isThinking = true;
+                                        remainingContent = remainingContent.substring(startThinkIndex + 7);
+                                    } else {
+                                        assistantMessage += remainingContent;
+                                        if (currentAssistantBubble) {
+                                            currentAssistantBubble.querySelector('.content').innerText = assistantMessage;
+                                        }
+                                        remainingContent = '';
+                                    }
+                                }
+                                chatBox.scrollTop = chatBox.scrollHeight;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error parsing chunk:', e);
+                    }
+                }
+            }
+            if (assistantMessage) {
+                messages.push({ role: 'assistant', content: assistantMessage });
+            }
+        });
+
+        function addMessageToChatbox(role, content) {
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', role);
+            const roleElement = document.createElement('div');
+            roleElement.classList.add('role');
+            roleElement.innerText = role;
+            const contentElement = document.createElement('div');
+            contentElement.classList.add('content');
+            contentElement.innerText = content;
+            messageElement.appendChild(roleElement);
+            messageElement.appendChild(contentElement);
+            chatBox.appendChild(messageElement);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            return messageElement;
+        }
+
+        function addThoughtToChatbox(thought) {
+            let thoughtPre = chatBox.querySelector('.thought-content');
+            if (!thoughtPre) {
+                const details = document.createElement('details');
+                details.open = true;
+                const summary = document.createElement('summary');
+                summary.innerText = 'Thoughts';
+                const pre = document.createElement('pre');
+                pre.classList.add('thought-content');
+                details.appendChild(summary);
+                details.appendChild(pre);
+                const messageElement = document.createElement('div');
+                messageElement.classList.add('message', 'assistant');
+                messageElement.appendChild(details);
+                chatBox.appendChild(messageElement);
+                thoughtPre = pre;
+            }
+            thoughtPre.innerText += thought;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addToolCallToChatbox(toolCalls) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.innerText = 'Tool Calls';
+            const pre = document.createElement('pre');
+            pre.innerText = JSON.stringify(toolCalls, null, 2);
+            details.appendChild(summary);
+            details.appendChild(pre);
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', 'assistant');
+            messageElement.appendChild(details);
+            chatBox.appendChild(messageElement);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addToolOutputToChatbox(toolOutput) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.innerText = `Tool Output: ${toolOutput.name}`;
+            const pre = document.createElement('pre');
+            pre.innerText = toolOutput.content;
+            details.appendChild(summary);
+            details.appendChild(pre);
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', 'assistant');
+            messageElement.appendChild(details);
+            chatBox.appendChild(messageElement);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+    </script>
+</body>
+</html> 
